@@ -2,15 +2,41 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { readNbt, writeNbt, encodeTag, field, plain } from './nbt.mjs';
 
 // Run only after the fresh world has generated and the server has stopped.
 const root = path.resolve(import.meta.dirname, '..');
 const source = path.join(root, 'world');
-const destination = path.join(root, 'world_fresh_20260906');
-const backup = path.join(root, 'backups/world-reset-2026-09-06');
-const recoverGraves = process.argv.includes('--recover-graves');
-if (process.argv.slice(2).some(arg => arg !== '--recover-graves')) throw new Error('Unknown argument');
+const options = { destination: 'world_fresh_20260906', backup: 'backups/world-reset-2026-09-06', sourceCommit: undefined, recoverGraves: false };
+const argumentsList = process.argv.slice(2);
+for (let index = 0; index < argumentsList.length; index++) {
+  const arg = argumentsList[index];
+  if (arg === '--recover-graves') options.recoverGraves = true;
+  else if (['--destination', '--backup', '--source-commit'].includes(arg)) {
+    const value = argumentsList[++index];
+    if (!value || value.startsWith('--')) throw new Error(`Missing value for ${arg}`);
+    options[arg === '--source-commit' ? 'sourceCommit' : arg.slice(2)] = value;
+  } else throw new Error(`Unknown argument: ${arg}`);
+}
+function localPath(value) {
+  const resolved = path.resolve(root, value);
+  const relative = path.relative(root, resolved);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Migration paths must stay inside the server folder');
+  return resolved;
+}
+const destination = localPath(options.destination);
+const backup = localPath(options.backup);
+assert.ok(destination !== source && !destination.startsWith(source + path.sep), 'Do not migrate over the source world');
+assert.ok(backup.startsWith(path.join(root, 'backups') + path.sep), 'Backups must be inside backups/');
+const recoverGraves = options.recoverGraves;
+if (options.sourceCommit) assert.match(options.sourceCommit, /^[0-9a-f]{40}$/);
+assert.ok(!fs.existsSync(path.join(backup, 'migration-report.json')), 'This migration report already exists');
+function verifySource(name, bytes) {
+  if (!options.sourceCommit) return;
+  const committed = execFileSync('git', ['show', `${options.sourceCommit}:world/${name.replaceAll('\\', '/')}`], { cwd: root, maxBuffer: 16 * 1024 * 1024 });
+  assert.deepEqual(bytes, committed, `Source differs from the selected upstream commit: ${name}`);
+}
 const level = field(readNbt(fs.readFileSync(path.join(destination, 'level.dat'))).fields, 'Data').value;
 const spawn = ['SpawnX', 'SpawnY', 'SpawnZ'].map(name => plain(field(level, name)));
 assert.ok(spawn.every(Number.isFinite), 'Missing generated spawn');
@@ -39,12 +65,17 @@ const removed = new Set(['SpawnX', 'SpawnY', 'SpawnZ', 'SpawnAngle', 'SpawnDimen
 const changed = new Set([...removed, 'Pos', 'Motion', 'Rotation', 'Dimension', 'Health', 'DeathTime', 'HurtTime',
   'HurtByTimestamp', 'FallDistance', 'FallFlying', 'Fire', 'Air', 'OnGround', 'SleepTimer', 'PortalCooldown',
   'foodLevel', 'foodSaturationLevel', 'foodExhaustionLevel', 'foodTickTimer']);
-const report = { oldWorld: 'world', newWorld: 'world_fresh_20260906', seed, spawn, recoverGraves, players: [], sharedFiles: [] };
+const sourceLevel = fs.readFileSync(path.join(source, 'level.dat'));
+verifySource('level.dat', sourceLevel);
+const sourceData = field(readNbt(sourceLevel).fields, 'Data').value;
+const report = { oldWorld: 'world', newWorld: path.relative(root, destination).replaceAll('\\', '/'), sourceCommit: options.sourceCommit,
+  sourceLastSavedUtc: new Date(Number(plain(field(sourceData, 'LastPlayed')))).toISOString(), seed, spawn, recoverGraves, players: [], sharedFiles: [] };
 const prepared = [];
 
 for (const name of fs.readdirSync(path.join(source, 'playerdata')).filter(name => name.endsWith('.dat'))) {
   const uuid = name.slice(0, -4);
   const original = fs.readFileSync(path.join(source, 'playerdata', name));
+  verifySource(`playerdata/${name}`, original);
   const originalNbt = readNbt(original);
   assert.deepEqual(readNbt(writeNbt(originalNbt)).buffer, originalNbt.buffer, `Round-trip failed: ${name}`);
   const nbt = { ...originalNbt, fields: originalNbt.fields.filter(tag => !removed.has(tag.name)) };
@@ -110,6 +141,7 @@ const sharedNames = fs.readdirSync(path.join(source, 'data')).filter(name =>
 for (const name of sharedNames) {
   const from = path.join(source, 'data', name);
   const to = path.join(destination, 'data', name);
+  verifySource(`data/${name}`, fs.readFileSync(from));
   // A first boot may have created empty storage. Keep a backup before replacing it.
   if (fs.existsSync(to)) fs.copyFileSync(to, path.join(backup, `new-world-initial-${name}`), fs.constants.COPYFILE_EXCL);
   fs.copyFileSync(from, to);
