@@ -1,0 +1,10 @@
+#Global AI Director Spawning & Behavior Settings
+[general]
+	#The amount of time in game ticks before a horror entity spawns near a random player. Default 18000 ticks = 15 minutes.
+	# Default: 18000
+	# Range: 20 ~ 1000000
+	spawnDelayTicks = 18000
+	#When true, the Stalker Run variant form will smash straight through any solid block in its way.
+	canStalkerBreakBlocks = true
+	#When true, the Maternal Wraith will smash through blocks when pursuing its target.
+	canMaternalWraithBreakBlocks = true
