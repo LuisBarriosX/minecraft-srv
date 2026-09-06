@@ -1,0 +1,2 @@
+# Preserve the verified world snapshot exactly across Windows and Linux checkouts.
+/world_fresh_20260906/** -text whitespace=cr-at-eol
